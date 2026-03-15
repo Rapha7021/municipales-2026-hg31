@@ -194,9 +194,9 @@ def _charger_depuis_interieur_impl() -> pd.DataFrame | None:
         if sa > 0 and sp == sa:
             statut = "1er tour acquis"
         elif sp == 0:
-            statut = "en cours / 2ème tour"
+            statut = "incomplet"
         else:
-            statut = "partiel"
+            statut = "incomplet"
 
         if not res["candidats"]:
             lignes.append({
@@ -594,7 +594,7 @@ def main():
 
     # ── Métriques globales ─────────────────────────────────────────
     nb_complets = df_final[df_final["Statut"] == "1er tour acquis"]["Commune"].nunique()
-    nb_partiels = df_final[df_final["Statut"].isin(["en cours / 2ème tour", "partiel"])]["Commune"].nunique()
+    nb_partiels = df_final[df_final["Statut"] == "incomplet"]["Commune"].nunique()
     nb_attente = df_final[
         df_final["Statut"].isin(["données non disponibles", "résultats non parvenus"])
     ]["Commune"].nunique()
@@ -602,8 +602,8 @@ def main():
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Communes suivies", len(COMMUNES_CIBLES))
     c2.metric("✅ 1er tour acquis",  nb_complets)
-    c3.metric("⏳ En cours / 2T",    nb_partiels)
-    c4.metric("⚠️ En attente",       nb_attente)
+    c3.metric("⏳ Incomplet",         nb_partiels)
+    c4.metric("⚠️ Non parvenus",     nb_attente)
 
     st.divider()
 
@@ -641,7 +641,7 @@ def main():
     def colorier_statut(val):
         if val == "1er tour acquis":
             return "background-color: #d4edda; color: #155724;"
-        elif val in ("en cours / 2ème tour", "partiel"):
+        elif val == "incomplet":
             return "background-color: #fff3cd; color: #856404;"
         elif val in ("données non disponibles", "résultats non parvenus"):
             return "background-color: #f8d7da; color: #721c24;"
