@@ -17,11 +17,7 @@ Déploiement (Streamlit Community Cloud) :
 
 import io
 import os
-import tempfile
-import traceback
 from datetime import datetime
-from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 import requests
@@ -68,30 +64,42 @@ COMMUNES_CIBLES = {
 # ─────────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=180, show_spinner=False)
-def telecharger_parquet(url: str, nom_fichier: str) -> bytes:
-    """Télécharge un fichier Parquet et retourne son contenu brut (bytes).
-    Mis en cache par Streamlit pendant 3 minutes (TTL=180s).
+def charger_et_filtrer() -> tuple:
+    """Télécharge les Parquet nationaux, filtre sur HG31 et retourne
+    uniquement les DataFrames filtrés (légers). Le dataset complet est
+    libéré de la mémoire après cette fonction.
+    Mis en cache 3 min (TTL=180s).
     """
-    resp = requests.get(url, timeout=120)
-    resp.raise_for_status()
-    return resp.content
+    resp_gen = requests.get(URL_GENERAL, timeout=120)
+    resp_gen.raise_for_status()
+    df_general = pd.read_parquet(io.BytesIO(resp_gen.content))
+    del resp_gen  # libère les bytes bruts
+
+    resp_cand = requests.get(URL_CANDIDATS, timeout=120)
+    resp_cand.raise_for_status()
+    df_candidats = pd.read_parquet(io.BytesIO(resp_cand.content))
+    del resp_cand
+
+    # Filtrer immédiatement sur l'élection + département
+    gen = df_general[
+        (df_general["id_election"] == ID_ELECTION) &
+        (df_general["code_departement"] == CODE_DEPARTEMENT)
+    ].copy()
+    del df_general
+
+    cand = df_candidats[
+        (df_candidats["id_election"] == ID_ELECTION) &
+        (df_candidats["code_departement"] == CODE_DEPARTEMENT)
+    ].copy()
+    del df_candidats
+
+    # Retourne les IDs d'élections disponibles pour le message d'avertissement
+    return gen, cand
 
 
 # ─────────────────────────────────────────────────────────────────
 # TRAITEMENT DES DONNÉES (identique au script CLI)
 # ─────────────────────────────────────────────────────────────────
-
-def filtrer_election(df_general, df_candidats):
-    gen = df_general[
-        (df_general["id_election"] == ID_ELECTION) &
-        (df_general["code_departement"] == CODE_DEPARTEMENT)
-    ].copy()
-    cand = df_candidats[
-        (df_candidats["id_election"] == ID_ELECTION) &
-        (df_candidats["code_departement"] == CODE_DEPARTEMENT)
-    ].copy()
-    return gen, cand
-
 
 def agreger_resultats(gen, cand):
     codes_cibles = set(COMMUNES_CIBLES.keys())
@@ -238,11 +246,10 @@ def main():
         st.cache_data.clear()
         st.rerun()
 
-    # ── Téléchargement (mis en cache 3 min via @st.cache_data) ─────
+    # ── Téléchargement + filtrage (mis en cache 3 min) ─────────────
     try:
         with st.spinner("Téléchargement des données depuis data.gouv.fr…"):
-            raw_gen  = telecharger_parquet(URL_GENERAL,   "general-results.parquet")
-            raw_cand = telecharger_parquet(URL_CANDIDATS, "candidats-results.parquet")
+            gen, cand = charger_et_filtrer()
     except Exception as e:
         st.error(f"❌ Impossible de contacter data.gouv.fr : {e}")
         st.exception(e)
@@ -251,24 +258,10 @@ def main():
     heure = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     st.info(f"Dernière vérification : {heure}")
 
-    # ── Chargement des Parquet depuis les bytes ────────────────────
-    try:
-        df_general   = pd.read_parquet(io.BytesIO(raw_gen))
-        df_candidats = pd.read_parquet(io.BytesIO(raw_cand))
-    except Exception as e:
-        st.error(f"❌ Erreur de lecture des fichiers : {e}")
-        st.exception(e)
-        st.stop()
-
-    gen, cand = filtrer_election(df_general, df_candidats)
-
     if gen.empty:
-        elections_dispo = sorted(df_general["id_election"].unique())
-        muni_dispo      = [e for e in elections_dispo if "muni" in e]
         st.warning(
             f"⚠️ Aucune donnée disponible pour **{ID_ELECTION}**."
             f" Les résultats ne sont pas encore publiés.\n\n"
-            f"Élections municipales disponibles dans le dataset : `{muni_dispo}`\n\n"
             f"Le dashboard se mettra à jour automatiquement dès publication."
         )
         st.stop()
