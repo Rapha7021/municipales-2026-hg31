@@ -18,14 +18,14 @@ Déploiement (Streamlit Community Cloud) :
 import io
 import os
 import tempfile
-import time
+import traceback
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 
 # ─────────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -63,56 +63,18 @@ COMMUNES_CIBLES = {
     "31167": {"nom": "Encausse-les-Thermes",      "bv_ref": 1},
 }
 
-# Sur Streamlit Cloud le repo est en lecture seule → on écrit dans /tmp
-CACHE_DIR = Path(tempfile.gettempdir()) / "elections_cache"
-CACHE_DIR.mkdir(exist_ok=True)
-
 # ─────────────────────────────────────────────────────────────────
-# DÉTECTION DE CHANGEMENT (ETag / Last-Modified)
+# TÉLÉCHARGEMENT AVEC CACHE STREAMLIT
 # ─────────────────────────────────────────────────────────────────
 
-def get_remote_fingerprint(url: str) -> str | None:
-    """Retourne l'ETag ou Last-Modified du fichier distant, sans le télécharger."""
-    try:
-        r = requests.head(url, timeout=10)
-        return r.headers.get("ETag") or r.headers.get("Last-Modified")
-    except requests.RequestException:
-        return None
-
-
-def telecharger_si_modifie(url: str, nom_fichier: str) -> tuple[Path, bool]:
+@st.cache_data(ttl=180, show_spinner=False)
+def telecharger_parquet(url: str, nom_fichier: str) -> bytes:
+    """Télécharge un fichier Parquet et retourne son contenu brut (bytes).
+    Mis en cache par Streamlit pendant 3 minutes (TTL=180s).
     """
-    Télécharge le fichier uniquement si l'empreinte distante a changé.
-    Retourne (chemin_local, a_changé).
-    """
-    chemin    = CACHE_DIR / nom_fichier
-    etag_file = CACHE_DIR / (nom_fichier + ".etag")
-
-    empreinte_distante = get_remote_fingerprint(url)
-    empreinte_stockee  = etag_file.read_text().strip() if etag_file.exists() else None
-
-    # Pas de changement détecté et fichier déjà présent
-    if chemin.exists() and empreinte_distante and empreinte_distante == empreinte_stockee:
-        return chemin, False
-
-    # Téléchargement
-    resp = requests.get(url, timeout=120, stream=True)
+    resp = requests.get(url, timeout=120)
     resp.raise_for_status()
-
-    fd, tmp = tempfile.mkstemp(dir=str(CACHE_DIR), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                f.write(chunk)
-        os.replace(tmp, str(chemin))
-    except Exception:
-        os.unlink(tmp)
-        raise
-
-    if empreinte_distante:
-        etag_file.write_text(empreinte_distante)
-
-    return chemin, True
+    return resp.content
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -268,33 +230,34 @@ def main():
         layout="wide",
     )
 
-    # ── Auto-refresh toutes les 3 minutes (meta-refresh HTML natif) ──
-    components.html("<meta http-equiv='refresh' content='180'>", height=0)
-
     st.title("🗳️ Municipales 2026 — 1er tour — Haute-Garonne (31)")
-    st.caption("Données : data.gouv.fr · Vérification automatique toutes les 3 minutes")
+    st.caption("Données : data.gouv.fr · Cache de 3 min · Cliquez 🔄 pour forcer le rafraîchissement")
 
-    # ── Téléchargement avec détection de changement ────────────────
-    with st.spinner("Vérification des données sur data.gouv.fr…"):
-        try:
-            f_gen,  changed_gen  = telecharger_si_modifie(URL_GENERAL,   "general-results.parquet")
-            f_cand, changed_cand = telecharger_si_modifie(URL_CANDIDATS, "candidats-results.parquet")
-        except Exception as e:
-            st.error(f"❌ Impossible de contacter data.gouv.fr : {e}")
-            st.stop()
+    # ── Bouton de rafraîchissement ─────────────────────────────────
+    if st.button("🔄 Rafraîchir les données"):
+        st.cache_data.clear()
+        st.rerun()
+
+    # ── Téléchargement (mis en cache 3 min via @st.cache_data) ─────
+    try:
+        with st.spinner("Téléchargement des données depuis data.gouv.fr…"):
+            raw_gen  = telecharger_parquet(URL_GENERAL,   "general-results.parquet")
+            raw_cand = telecharger_parquet(URL_CANDIDATS, "candidats-results.parquet")
+    except Exception as e:
+        st.error(f"❌ Impossible de contacter data.gouv.fr : {e}")
+        st.exception(e)
+        st.stop()
 
     heure = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    if changed_gen or changed_cand:
-        st.success(f"🔄 Nouvelles données détectées et chargées — {heure}")
-    else:
-        st.info(f"Aucun changement depuis la dernière vérification — {heure}")
+    st.info(f"Dernière vérification : {heure}")
 
-    # ── Chargement des Parquet ─────────────────────────────────────
+    # ── Chargement des Parquet depuis les bytes ────────────────────
     try:
-        df_general   = pd.read_parquet(f_gen)
-        df_candidats = pd.read_parquet(f_cand)
+        df_general   = pd.read_parquet(io.BytesIO(raw_gen))
+        df_candidats = pd.read_parquet(io.BytesIO(raw_cand))
     except Exception as e:
         st.error(f"❌ Erreur de lecture des fichiers : {e}")
+        st.exception(e)
         st.stop()
 
     gen, cand = filtrer_election(df_general, df_candidats)
