@@ -25,7 +25,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
+import streamlit.components.v1 as components
 
 # ─────────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -268,8 +268,8 @@ def main():
         layout="wide",
     )
 
-    # ── Auto-refresh toutes les 3 minutes ──────────────────────────
-    st_autorefresh(interval=3 * 60 * 1000, key="autorefresh")
+    # ── Auto-refresh toutes les 3 minutes (meta-refresh HTML natif) ──
+    components.html("<meta http-equiv='refresh' content='180'>", height=0)
 
     st.title("🗳️ Municipales 2026 — 1er tour — Haute-Garonne (31)")
     st.caption("Données : data.gouv.fr · Vérification automatique toutes les 3 minutes")
