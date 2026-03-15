@@ -18,6 +18,9 @@ Déploiement (Streamlit Community Cloud) :
 import io
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+TZ_PARIS = ZoneInfo("Europe/Paris")
 
 import pandas as pd
 import requests
@@ -255,7 +258,7 @@ def main():
         st.exception(e)
         st.stop()
 
-    heure = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    heure = datetime.now(tz=TZ_PARIS).strftime("%d/%m/%Y %H:%M:%S")
     st.info(f"Dernière vérification : {heure}")
 
     if gen.empty:
@@ -286,7 +289,7 @@ def main():
     st.divider()
 
     # ── Bouton téléchargement Excel ────────────────────────────────
-    horodatage  = datetime.now().strftime("%Y%m%d_%H%M")
+    horodatage  = datetime.now(tz=TZ_PARIS).strftime("%Y%m%d_%H%M")
     excel_bytes = generer_excel_bytes(df_final)
     st.download_button(
         label="📥 Télécharger Excel",
