@@ -380,20 +380,71 @@ def construire_tableau_final(participation, resultats_cand):
 # ─────────────────────────────────────────────────────────────────
 
 def generer_excel_bytes(df_final: pd.DataFrame) -> bytes:
+    from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df_final.to_excel(writer, index=False, sheet_name="Résultats T1")
         ws = writer.sheets["Résultats T1"]
+
+        # Colonnes à fusionner (celles liées à la commune, pas au candidat)
+        cols_commune = ["Commune", "Code_INSEE", "Votants", "Taux abstention (%)", "Statut"]
+        col_indices = {col: list(df_final.columns).index(col) + 1 for col in cols_commune}
+
+        # Fusionner les cellules pour les communes avec plusieurs candidats
+        row_idx = 2  # ligne 1 = en-tête
+        while row_idx <= len(df_final) + 1:
+            commune = ws.cell(row_idx, 1).value
+            end_row = row_idx
+            while end_row + 1 <= len(df_final) + 1 and ws.cell(end_row + 1, 1).value == commune:
+                end_row += 1
+            if end_row > row_idx:
+                for col_name, col_idx in col_indices.items():
+                    ws.merge_cells(
+                        start_row=row_idx, start_column=col_idx,
+                        end_row=end_row, end_column=col_idx,
+                    )
+                    ws.cell(row_idx, col_idx).alignment = Alignment(
+                        vertical="center", wrap_text=True,
+                    )
+            row_idx = end_row + 1
+
+        # Largeurs de colonnes
         for i, col in enumerate(df_final.columns, 1):
             col_lens = df_final[col].astype(str).str.len()
             max_len = max(len(str(col)), col_lens.max() if len(col_lens) > 0 else 0)
             ws.column_dimensions[ws.cell(1, i).column_letter].width = min(max_len + 3, 60)
 
+        # Style en-tête
+        header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True)
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+
+        # Bordures légères
+        thin_border = Border(
+            left=Side(style="thin", color="D9D9D9"),
+            right=Side(style="thin", color="D9D9D9"),
+            top=Side(style="thin", color="D9D9D9"),
+            bottom=Side(style="thin", color="D9D9D9"),
+        )
+        for row in ws.iter_rows(min_row=2, max_row=len(df_final) + 1,
+                                max_col=len(df_final.columns)):
+            for cell in row:
+                cell.border = thin_border
+
+        # Feuille synthèse participation
         resume = df_final.drop_duplicates(subset=["Commune"])[
             ["Commune", "Code_INSEE", "Votants", "Taux abstention (%)", "Statut"]
         ].sort_values("Commune")
         resume.to_excel(writer, index=False, sheet_name="Synthèse participation")
         ws2 = writer.sheets["Synthèse participation"]
+        for cell in ws2[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
         for i, col in enumerate(resume.columns, 1):
             col_lens = resume[col].astype(str).str.len()
             max_len = max(len(str(col)), col_lens.max() if len(col_lens) > 0 else 0)
