@@ -205,7 +205,7 @@ def _charger_depuis_interieur_impl() -> pd.DataFrame | None:
         elif pct is not None:
             statut = f"en cours ({pct:.1f}% dépouillé)"
         else:
-            statut = "2ème tour probable"
+            statut = "2ème tour"
 
         if not res["candidats"]:
             lignes.append({
@@ -604,7 +604,7 @@ def main():
     # ── Métriques globales ─────────────────────────────────────────
     nb_complets = df_final[df_final["Statut"] == "1er tour acquis"]["Commune"].nunique()
     nb_en_cours = df_final[df_final["Statut"].str.startswith("en cours", na=False)]["Commune"].nunique()
-    nb_2t = df_final[df_final["Statut"] == "2ème tour probable"]["Commune"].nunique()
+    nb_2t = df_final[df_final["Statut"] == "2ème tour"]["Commune"].nunique()
     nb_attente = df_final[
         df_final["Statut"].isin(["données non disponibles", "résultats non parvenus"])
     ]["Commune"].nunique()
@@ -612,7 +612,7 @@ def main():
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Communes suivies",  len(COMMUNES_CIBLES))
     c2.metric("✅ 1er tour acquis",  nb_complets)
-    c3.metric("🟠 2ème tour probable", nb_2t)
+    c3.metric("🟠 2ème tour", nb_2t)
     c4.metric("⏳ En cours",         nb_en_cours)
     c5.metric("⚠️ Non parvenus",     nb_attente)
 
@@ -652,7 +652,7 @@ def main():
     def colorier_statut(val):
         if val == "1er tour acquis":
             return "background-color: #d4edda; color: #155724;"
-        elif val == "2ème tour probable":
+        elif val == "2ème tour":
             return "background-color: #fde8d0; color: #7d3c00;"
         elif str(val).startswith("en cours"):
             return "background-color: #fff3cd; color: #856404;"
