@@ -104,7 +104,7 @@ def scraper_commune(code_commune: str) -> dict | None:
         return None
 
     tables = soup.find_all("table")
-    resultat = {"candidats": [], "participation": {}}
+    resultat = {"candidats": [], "participation": {}, "sieges_pourvus": 0, "sieges_a_pourvoir": 0}
 
     for table in tables:
         rows = table.find_all("tr")
@@ -114,8 +114,20 @@ def scraper_commune(code_commune: str) -> dict | None:
         # Identifier le type de table par l'en-tête
         header_cells = [c.get_text(strip=True).lower() for c in rows[0].find_all(["td", "th"])]
 
+        # Table des sièges (contient "sièges à pourvoir" et "sièges pourvus")
+        if any("sièges" in h or "sieges" in h or "pourvoir" in h for h in header_cells):
+            for row in rows[1:]:
+                cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
+                if len(cells) >= 3:
+                    a_pourvoir = _nettoyer_nombre(cells[1])
+                    pourvus = _nettoyer_nombre(cells[2])
+                    if a_pourvoir is not None:
+                        resultat["sieges_a_pourvoir"] += a_pourvoir
+                    if pourvus is not None:
+                        resultat["sieges_pourvus"] += pourvus
+
         # Table de participation (contient "nombre", "% inscrits", etc.)
-        if any("nombre" in h for h in header_cells):
+        elif any("nombre" in h for h in header_cells):
             for row in rows[1:]:
                 cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
                 if len(cells) >= 2:
@@ -176,13 +188,23 @@ def _charger_depuis_interieur_impl() -> pd.DataFrame | None:
         abstentions = p.get("abstentions", 0)
         taux_abst = round(abstentions / inscrits * 100, 2) if inscrits > 0 else 0.0
 
+        # Statut basé sur les sièges pourvus
+        sp = res["sieges_pourvus"]
+        sa = res["sieges_a_pourvoir"]
+        if sa > 0 and sp == sa:
+            statut = "1er tour acquis"
+        elif sp == 0:
+            statut = "en cours / 2ème tour"
+        else:
+            statut = "partiel"
+
         if not res["candidats"]:
             lignes.append({
                 "Commune": nom, "Code_INSEE": code,
                 "Votants": votants, "Taux abstention (%)": taux_abst,
                 "Candidat": "(aucun candidat trouvé)", "Nuance": "", "Liste": "",
                 "Voix": None, "% exprimés": None,
-                "Statut": "complet",
+                "Statut": statut,
             })
             continue
 
@@ -201,7 +223,7 @@ def _charger_depuis_interieur_impl() -> pd.DataFrame | None:
                 "Liste": c["liste"],
                 "Voix": c["voix"],
                 "% exprimés": pct,
-                "Statut": "complet",
+                "Statut": statut,
             })
 
     if not lignes:
@@ -571,19 +593,17 @@ def main():
         st.session_state.heure_maj = datetime.now(tz=TZ_PARIS)
 
     # ── Métriques globales ─────────────────────────────────────────
-    nb_complets = df_final[df_final["Statut"] == "complet"]["Commune"].nunique()
-    nb_partiels = df_final["Statut"].str.startswith("partiel", na=False).pipe(
-        lambda m: df_final[m]["Commune"].nunique()
-    )
+    nb_complets = df_final[df_final["Statut"] == "1er tour acquis"]["Commune"].nunique()
+    nb_partiels = df_final[df_final["Statut"].isin(["en cours / 2ème tour", "partiel"])]["Commune"].nunique()
     nb_attente = df_final[
         df_final["Statut"].isin(["données non disponibles", "résultats non parvenus"])
     ]["Commune"].nunique()
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Communes suivies", len(COMMUNES_CIBLES))
-    c2.metric("✅ Complets",       nb_complets)
-    c3.metric("⏳ Partiels",       nb_partiels)
-    c4.metric("⚠️ En attente",    nb_attente)
+    c2.metric("✅ 1er tour acquis",  nb_complets)
+    c3.metric("⏳ En cours / 2T",    nb_partiels)
+    c4.metric("⚠️ En attente",       nb_attente)
 
     st.divider()
 
@@ -619,9 +639,9 @@ def main():
     df_affiche = df_final if choix == "Toutes" else df_final[df_final["Commune"] == choix]
 
     def colorier_statut(val):
-        if val == "complet":
+        if val == "1er tour acquis":
             return "background-color: #d4edda; color: #155724;"
-        elif str(val).startswith("partiel"):
+        elif val in ("en cours / 2ème tour", "partiel"):
             return "background-color: #fff3cd; color: #856404;"
         elif val in ("données non disponibles", "résultats non parvenus"):
             return "background-color: #f8d7da; color: #721c24;"
