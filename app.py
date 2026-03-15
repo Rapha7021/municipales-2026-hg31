@@ -63,7 +63,8 @@ COMMUNES_CIBLES = {
     "31167": {"nom": "Encausse-les-Thermes",      "bv_ref": 1},
 }
 
-CACHE_DIR = Path(__file__).parent / ".cache"
+# Sur Streamlit Cloud le repo est en lecture seule → on écrit dans /tmp
+CACHE_DIR = Path(tempfile.gettempdir()) / "elections_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 # ─────────────────────────────────────────────────────────────────
