@@ -79,8 +79,8 @@ COMMUNES_CIBLES = {
 # ─────────────────────────────────────────────────────────────────
 
 def _nettoyer_nombre(texte: str) -> int | None:
-    """Convertit '1 211' ou '1\xa0211' en 1211."""
-    s = texte.replace("\xa0", "").replace(" ", "").replace(",", "").strip()
+    """Convertit '1 211', '1\xa0211' ou '1\u202f211' en 1211."""
+    s = texte.replace("\xa0", "").replace("\u202f", "").replace(" ", "").replace(",", "").strip()
     try:
         return int(s)
     except (ValueError, TypeError):
@@ -127,17 +127,22 @@ def scraper_commune(code_commune: str) -> dict | None:
 
         # Table des candidatures (contient "voix", "conduite par", etc.)
         elif any("voix" in h for h in header_cells):
+            # Détecter si la colonne "Nuance" est présente (décale les indices)
+            has_nuance = any("nuance" in h for h in header_cells)
+            idx_voix = 3 if has_nuance else 2
+            idx_pct_exp = 5 if has_nuance else 4
+            idx_nuance = 2 if has_nuance else None
             for row in rows[1:]:
                 cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
-                if len(cells) >= 5:
-                    voix = _nettoyer_nombre(cells[2])
+                if len(cells) > idx_pct_exp:
+                    voix = _nettoyer_nombre(cells[idx_voix])
                     if voix is not None:
                         resultat["candidats"].append({
                             "liste": cells[0],
                             "candidat": cells[1],
-                            "nuance": "",
+                            "nuance": cells[idx_nuance] if idx_nuance else "",
                             "voix": voix,
-                            "pct_exprimes": cells[4].replace(",", "."),
+                            "pct_exprimes": cells[idx_pct_exp].replace(",", "."),
                         })
 
     return resultat if resultat["participation"] else None
