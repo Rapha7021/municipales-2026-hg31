@@ -103,8 +103,15 @@ def scraper_commune(code_commune: str) -> dict | None:
     if titre and "non parvenus" in titre.get_text().lower():
         return None
 
+    # Détecter si dépouillement encore en cours ("incomplets calculés sur la base de X%")
+    m = re.search(
+        r'incomplets?\s+calcul[ée]s?\s+sur\s+la\s+base\s+de\s+([\d,\.]+)\s*%',
+        soup.get_text(), re.IGNORECASE,
+    )
+    pct_depouille = float(m.group(1).replace(",", ".")) if m else None
+
     tables = soup.find_all("table")
-    resultat = {"candidats": [], "participation": {}, "sieges_pourvus": 0, "sieges_a_pourvoir": 0}
+    resultat = {"candidats": [], "participation": {}, "sieges_pourvus": 0, "sieges_a_pourvoir": 0, "pct_depouille": pct_depouille}
 
     for table in tables:
         rows = table.find_all("tr")
@@ -189,15 +196,16 @@ def _charger_depuis_interieur_impl() -> pd.DataFrame | None:
         abstentions = p.get("abstentions", 0)
         taux_abst = round(abstentions / inscrits * 100, 2) if inscrits > 0 else 0.0
 
-        # Statut basé sur les sièges pourvus
+        # Statut basé sur les sièges pourvus + avancement dépouillement
         sp = res["sieges_pourvus"]
         sa = res["sieges_a_pourvoir"]
+        pct = res["pct_depouille"]
         if sa > 0 and sp == sa:
             statut = "1er tour acquis"
-        elif sp == 0:
-            statut = "incomplet"
+        elif pct is not None:
+            statut = f"en cours ({pct:.1f}% dépouillé)"
         else:
-            statut = "incomplet"
+            statut = "2ème tour probable"
 
         if not res["candidats"]:
             lignes.append({
@@ -595,16 +603,18 @@ def main():
 
     # ── Métriques globales ─────────────────────────────────────────
     nb_complets = df_final[df_final["Statut"] == "1er tour acquis"]["Commune"].nunique()
-    nb_partiels = df_final[df_final["Statut"] == "incomplet"]["Commune"].nunique()
+    nb_en_cours = df_final[df_final["Statut"].str.startswith("en cours", na=False)]["Commune"].nunique()
+    nb_2t = df_final[df_final["Statut"] == "2ème tour probable"]["Commune"].nunique()
     nb_attente = df_final[
         df_final["Statut"].isin(["données non disponibles", "résultats non parvenus"])
     ]["Commune"].nunique()
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Communes suivies", len(COMMUNES_CIBLES))
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Communes suivies",  len(COMMUNES_CIBLES))
     c2.metric("✅ 1er tour acquis",  nb_complets)
-    c3.metric("⏳ Incomplet",         nb_partiels)
-    c4.metric("⚠️ Non parvenus",     nb_attente)
+    c3.metric("🟠 2ème tour probable", nb_2t)
+    c4.metric("⏳ En cours",         nb_en_cours)
+    c5.metric("⚠️ Non parvenus",     nb_attente)
 
     st.divider()
 
@@ -642,7 +652,9 @@ def main():
     def colorier_statut(val):
         if val == "1er tour acquis":
             return "background-color: #d4edda; color: #155724;"
-        elif val == "incomplet":
+        elif val == "2ème tour probable":
+            return "background-color: #fde8d0; color: #7d3c00;"
+        elif str(val).startswith("en cours"):
             return "background-color: #fff3cd; color: #856404;"
         elif val in ("données non disponibles", "résultats non parvenus"):
             return "background-color: #f8d7da; color: #721c24;"
