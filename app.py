@@ -148,8 +148,7 @@ def scraper_commune(code_commune: str) -> dict | None:
     return resultat if resultat["participation"] else None
 
 
-@st.cache_data(ttl=120, show_spinner=False)
-def charger_depuis_interieur() -> pd.DataFrame | None:
+def _charger_depuis_interieur_impl() -> pd.DataFrame | None:
     """Scrape toutes les communes cibles depuis le site du Ministère.
     Retourne un DataFrame prêt à l'emploi, ou None si aucun résultat."""
     lignes = []
@@ -208,6 +207,12 @@ def charger_depuis_interieur() -> pd.DataFrame | None:
     if not lignes:
         return None
     return pd.DataFrame(lignes)
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def charger_depuis_interieur() -> pd.DataFrame | None:
+    """Version cachée (2 min) de _charger_depuis_interieur_impl."""
+    return _charger_depuis_interieur_impl()
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -483,8 +488,21 @@ def main():
     # ── Polling automatique toutes les 2 min ───────────────────────
     @st.fragment(run_every="120s")
     def polling_et_statut():
-        """Invalide le cache périodiquement et affiche le bandeau de statut."""
-        st.cache_data.clear()
+        """Toutes les 120s : re-scrape, compare le hash, rerun si changement."""
+        # Scrape léger pour comparer
+        try:
+            df_fresh = _charger_depuis_interieur_impl()  # bypass cache
+        except Exception:
+            df_fresh = None
+
+        if df_fresh is not None and not df_fresh.empty:
+            h = calculer_hash_donnees(df_fresh)
+            if h != st.session_state.hash_donnees:
+                # Nouvelles données détectées → vider le cache et relancer l'app
+                st.cache_data.clear()
+                st.rerun(scope="app")
+
+        # Bandeau de statut
         heure = datetime.now(tz=TZ_PARIS).strftime("%H:%M:%S")
         heure_maj_str = (
             st.session_state.heure_maj.strftime("%d/%m/%Y à %H:%M:%S")
@@ -499,7 +517,7 @@ def main():
             )
         else:
             st.info(
-                f"Dernière vérification : {heure} · "
+                f"🔄 Vérification auto : {heure} · "
                 f"Dernière MAJ : {heure_maj_str} · Source : {source}"
             )
 
