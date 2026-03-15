@@ -10,13 +10,15 @@
 Lancer en local :
     streamlit run app.py
 
-Déploiement (Streamlit Community Cloud) :
-    1. Pousser ce dépôt sur GitHub
-    2. Aller sur https://share.streamlit.io → New app → sélectionner app.py
+Sources de données (par priorité) :
+    1. Scraping temps réel du site du Ministère de l'Intérieur
+       resultats-elections.interieur.gouv.fr
+    2. Fallback : fichiers Parquet data.gouv.fr (pipeline open data)
 """
 
 import hashlib
 import io
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -25,6 +27,7 @@ TZ_PARIS = ZoneInfo("Europe/Paris")
 import pandas as pd
 import requests
 import streamlit as st
+from bs4 import BeautifulSoup
 
 # ─────────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -32,7 +35,16 @@ import streamlit as st
 
 ID_ELECTION = "2026_muni_t1"
 CODE_DEPARTEMENT = "31"
+CODE_REGION = "76"   # Occitanie
 
+# Source 1 : site du Ministère de l'Intérieur (temps réel)
+BASE_URL_INTERIEUR = (
+    "https://www.resultats-elections.interieur.gouv.fr"
+    "/municipales2026/ensemble_geographique"
+    f"/{CODE_REGION}/{CODE_DEPARTEMENT}"
+)
+
+# Source 2 (fallback) : pipeline open data data.gouv.fr
 URL_GENERAL   = "https://www.data.gouv.fr/api/1/datasets/r/ff16d511-10c0-405e-9b35-511723948fce"
 URL_CANDIDATS = "https://www.data.gouv.fr/api/1/datasets/r/4d3b35f6-0b22-4415-a24c-419a676312e2"
 
@@ -63,7 +75,138 @@ COMMUNES_CIBLES = {
 }
 
 # ─────────────────────────────────────────────────────────────────
-# DÉTECTION DES MISES À JOUR (requêtes HEAD légères)
+# SOURCE 1 : SCRAPING DU SITE DU MINISTÈRE (temps réel)
+# ─────────────────────────────────────────────────────────────────
+
+def _nettoyer_nombre(texte: str) -> int | None:
+    """Convertit '1 211' ou '1\xa0211' en 1211."""
+    s = texte.replace("\xa0", "").replace(" ", "").replace(",", "").strip()
+    try:
+        return int(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def scraper_commune(code_commune: str) -> dict | None:
+    """Scrape les résultats d'une commune depuis le site du Ministère.
+    Retourne None si résultats non parvenus ou erreur."""
+    url = f"{BASE_URL_INTERIEUR}/{code_commune}/"
+    resp = requests.get(url, timeout=30, headers={
+        "User-Agent": "DashboardMunicipales2026-HG31/1.0",
+    })
+    resp.raise_for_status()
+    resp.encoding = "utf-8"
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Détecter "résultats non parvenus"
+    titre = soup.find("h5")
+    if titre and "non parvenus" in titre.get_text().lower():
+        return None
+
+    tables = soup.find_all("table")
+    resultat = {"candidats": [], "participation": {}}
+
+    for table in tables:
+        rows = table.find_all("tr")
+        if not rows:
+            continue
+
+        # Identifier le type de table par l'en-tête
+        header_cells = [c.get_text(strip=True).lower() for c in rows[0].find_all(["td", "th"])]
+
+        # Table de participation (contient "nombre", "% inscrits", etc.)
+        if any("nombre" in h for h in header_cells):
+            for row in rows[1:]:
+                cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
+                if len(cells) >= 2:
+                    label = cells[0].lower()
+                    if label in ("inscrits", "abstentions", "votants", "blancs", "nuls", "exprimés"):
+                        val = _nettoyer_nombre(cells[1])
+                        if val is not None:
+                            resultat["participation"][label] = val
+
+        # Table des candidatures (contient "voix", "conduite par", etc.)
+        elif any("voix" in h for h in header_cells):
+            for row in rows[1:]:
+                cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
+                if len(cells) >= 5:
+                    voix = _nettoyer_nombre(cells[2])
+                    if voix is not None:
+                        resultat["candidats"].append({
+                            "liste": cells[0],
+                            "candidat": cells[1],
+                            "nuance": "",
+                            "voix": voix,
+                            "pct_exprimes": cells[4].replace(",", "."),
+                        })
+
+    return resultat if resultat["participation"] else None
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def charger_depuis_interieur() -> pd.DataFrame | None:
+    """Scrape toutes les communes cibles depuis le site du Ministère.
+    Retourne un DataFrame prêt à l'emploi, ou None si aucun résultat."""
+    lignes = []
+    for code, info in sorted(COMMUNES_CIBLES.items(), key=lambda x: x[1]["nom"]):
+        nom = info["nom"]
+        try:
+            res = scraper_commune(code)
+        except Exception:
+            res = None
+
+        if res is None:
+            lignes.append({
+                "Commune": nom, "Code_INSEE": code,
+                "Votants": None, "Taux abstention (%)": None,
+                "Candidat": "", "Nuance": "", "Liste": "",
+                "Voix": None, "% exprimés": None,
+                "Statut": "résultats non parvenus",
+            })
+            continue
+
+        p = res["participation"]
+        inscrits = p.get("inscrits", 0)
+        votants = p.get("votants", 0)
+        exprimes = p.get("exprimés", 0)
+        abstentions = p.get("abstentions", 0)
+        taux_abst = round(abstentions / inscrits * 100, 2) if inscrits > 0 else 0.0
+
+        if not res["candidats"]:
+            lignes.append({
+                "Commune": nom, "Code_INSEE": code,
+                "Votants": votants, "Taux abstention (%)": taux_abst,
+                "Candidat": "(aucun candidat trouvé)", "Nuance": "", "Liste": "",
+                "Voix": None, "% exprimés": None,
+                "Statut": "complet",
+            })
+            continue
+
+        for c in sorted(res["candidats"], key=lambda x: x["voix"], reverse=True):
+            try:
+                pct = float(c["pct_exprimes"])
+            except (ValueError, TypeError):
+                pct = round(c["voix"] / exprimes * 100, 2) if exprimes > 0 else 0.0
+            lignes.append({
+                "Commune": nom,
+                "Code_INSEE": code,
+                "Votants": votants,
+                "Taux abstention (%)": taux_abst,
+                "Candidat": c["candidat"],
+                "Nuance": c["nuance"],
+                "Liste": c["liste"],
+                "Voix": c["voix"],
+                "% exprimés": pct,
+                "Statut": "complet",
+            })
+
+    if not lignes:
+        return None
+    return pd.DataFrame(lignes)
+
+
+# ─────────────────────────────────────────────────────────────────
+# SOURCE 2 (FALLBACK) : FICHIERS PARQUET DATA.GOUV.FR
 # ─────────────────────────────────────────────────────────────────
 
 def recuperer_signatures_http() -> dict:
@@ -83,17 +226,12 @@ def recuperer_signatures_http() -> dict:
     return signatures
 
 
-def calculer_hash_donnees(gen: pd.DataFrame, cand: pd.DataFrame) -> str:
-    """Hash du contenu des DataFrames pour détecter des changements réels."""
+def calculer_hash_donnees(df: pd.DataFrame) -> str:
+    """Hash du contenu d'un DataFrame pour détecter des changements réels."""
     h = hashlib.md5(usedforsecurity=False)
-    h.update(pd.util.hash_pandas_object(gen).values.tobytes())
-    h.update(pd.util.hash_pandas_object(cand).values.tobytes())
+    h.update(pd.util.hash_pandas_object(df).values.tobytes())
     return h.hexdigest()
 
-
-# ─────────────────────────────────────────────────────────────────
-# TÉLÉCHARGEMENT AVEC CACHE STREAMLIT
-# ─────────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300, show_spinner=False)
 def charger_et_filtrer() -> tuple:
@@ -104,14 +242,13 @@ def charger_et_filtrer() -> tuple:
     resp_gen = requests.get(URL_GENERAL, timeout=120)
     resp_gen.raise_for_status()
     df_general = pd.read_parquet(io.BytesIO(resp_gen.content))
-    del resp_gen  # libère les bytes bruts
+    del resp_gen
 
     resp_cand = requests.get(URL_CANDIDATS, timeout=120)
     resp_cand.raise_for_status()
     df_candidats = pd.read_parquet(io.BytesIO(resp_cand.content))
     del resp_cand
 
-    # Filtrer immédiatement sur l'élection + département
     gen = df_general[
         (df_general["id_election"] == ID_ELECTION) &
         (df_general["code_departement"] == CODE_DEPARTEMENT)
@@ -272,7 +409,10 @@ def main():
     )
 
     st.title("🗳️ Municipales 2026 — 1er tour — Haute-Garonne (31)")
-    st.caption("Données : data.gouv.fr · Vérification automatique toutes les 60 secondes")
+    st.caption(
+        "Source primaire : resultats-elections.interieur.gouv.fr · "
+        "Fallback : data.gouv.fr · Rafraîchissement auto toutes les 2 min"
+    )
 
     # ── Initialisation session state ───────────────────────────────
     if "hash_donnees" not in st.session_state:
@@ -281,34 +421,31 @@ def main():
         st.session_state.heure_maj = None
     if "donnees_nouvelles" not in st.session_state:
         st.session_state.donnees_nouvelles = False
-    if "sigs_http" not in st.session_state:
-        st.session_state.sigs_http = None
+    if "source_active" not in st.session_state:
+        st.session_state.source_active = None
 
-    # ── Vérification automatique des MAJ + affichage statut (toutes les 60s)
-    @st.fragment(run_every="60s")
+    # ── Polling automatique toutes les 2 min ───────────────────────
+    @st.fragment(run_every="120s")
     def polling_et_statut():
-        """Tourne toutes les 60s : HEAD check + mise à jour du bandeau de statut."""
-        sigs = recuperer_signatures_http()
-        anciennes = st.session_state.sigs_http
-        st.session_state.sigs_http = sigs
-        if anciennes is not None and sigs != anciennes:
-            st.cache_data.clear()
-            st.rerun(scope="app")
-
-        # Bandeau visible qui prouve que le polling tourne
+        """Invalide le cache périodiquement et affiche le bandeau de statut."""
+        st.cache_data.clear()
         heure = datetime.now(tz=TZ_PARIS).strftime("%H:%M:%S")
         heure_maj_str = (
             st.session_state.heure_maj.strftime("%d/%m/%Y à %H:%M:%S")
             if st.session_state.heure_maj
             else "—"
         )
+        source = st.session_state.source_active or "—"
         if st.session_state.donnees_nouvelles:
             st.success(
                 f"🆕 **Mise à jour détectée le {heure_maj_str} !** "
-                f"Les données ci-dessous sont à jour. Téléchargez le nouvel Excel."
+                f"Source : {source}"
             )
         else:
-            st.info(f"Dernière vérification : {heure} · Dernière MAJ des données : {heure_maj_str}")
+            st.info(
+                f"Dernière vérification : {heure} · "
+                f"Dernière MAJ : {heure_maj_str} · Source : {source}"
+            )
 
     polling_et_statut()
 
@@ -317,41 +454,57 @@ def main():
         st.cache_data.clear()
         st.rerun()
 
-    # ── Téléchargement + filtrage (cache 5 min, invalidé par HEAD) ─
+    # ── Chargement des données (Ministère puis fallback data.gouv) ─
+    df_final = None
+    source = None
+
+    # Source 1 : scraping Ministère de l'Intérieur
     try:
-        with st.spinner("Téléchargement des données depuis data.gouv.fr…"):
-            gen, cand = charger_et_filtrer()
-    except Exception as e:
-        st.error(f"❌ Impossible de contacter data.gouv.fr : {e}")
-        st.exception(e)
+        with st.spinner("Récupération des résultats depuis le Ministère de l'Intérieur…"):
+            df_final = charger_depuis_interieur()
+        if df_final is not None and not df_final.empty:
+            source = "Ministère de l'Intérieur (temps réel)"
+    except Exception:
+        df_final = None
+
+    # Source 2 : fallback data.gouv.fr
+    if df_final is None or df_final.empty:
+        try:
+            with st.spinner("Fallback : téléchargement depuis data.gouv.fr…"):
+                gen, cand = charger_et_filtrer()
+            if not gen.empty:
+                participation, resultats_cand = agreger_resultats(gen, cand)
+                df_final = construire_tableau_final(participation, resultats_cand)
+                source = "data.gouv.fr (Parquet)"
+        except Exception as e:
+            st.error(f"❌ Impossible de charger les données : {e}")
+            st.stop()
+
+    if df_final is None or df_final.empty:
+        st.warning(
+            "⚠️ Aucune donnée disponible. Les résultats ne sont pas encore publiés.\n\n"
+            "Le dashboard vérifie automatiquement toutes les 2 minutes."
+        )
         st.stop()
 
+    st.session_state.source_active = source
+
     # ── Détection de changement réel (hash du contenu) ─────────────
-    hash_actuel = calculer_hash_donnees(gen, cand)
+    hash_actuel = calculer_hash_donnees(df_final)
     if hash_actuel != st.session_state.hash_donnees:
         if st.session_state.hash_donnees is not None:
             st.session_state.donnees_nouvelles = True
         st.session_state.hash_donnees = hash_actuel
         st.session_state.heure_maj = datetime.now(tz=TZ_PARIS)
 
-    if gen.empty:
-        st.warning(
-            f"⚠️ Aucune donnée disponible pour **{ID_ELECTION}**."
-            f" Les résultats ne sont pas encore publiés.\n\n"
-            f"Le dashboard vérifie automatiquement toutes les 60 secondes."
-        )
-        st.stop()
-
-    # ── Traitement ─────────────────────────────────────────────────
-    participation, resultats_cand = agreger_resultats(gen, cand)
-    df_final = construire_tableau_final(participation, resultats_cand)
-
     # ── Métriques globales ─────────────────────────────────────────
     nb_complets = df_final[df_final["Statut"] == "complet"]["Commune"].nunique()
     nb_partiels = df_final["Statut"].str.startswith("partiel", na=False).pipe(
         lambda m: df_final[m]["Commune"].nunique()
     )
-    nb_attente = df_final[df_final["Statut"] == "données non disponibles"]["Commune"].nunique()
+    nb_attente = df_final[
+        df_final["Statut"].isin(["données non disponibles", "résultats non parvenus"])
+    ]["Commune"].nunique()
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Communes suivies", len(COMMUNES_CIBLES))
@@ -397,7 +550,7 @@ def main():
             return "background-color: #d4edda; color: #155724;"
         elif str(val).startswith("partiel"):
             return "background-color: #fff3cd; color: #856404;"
-        elif val == "données non disponibles":
+        elif val in ("données non disponibles", "résultats non parvenus"):
             return "background-color: #f8d7da; color: #721c24;"
         return ""
 
