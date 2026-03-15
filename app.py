@@ -629,7 +629,7 @@ def main():
 
     st.dataframe(
         df_affiche.style.map(colorier_statut, subset=["Statut"]),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=600,
     )
@@ -642,7 +642,7 @@ def main():
 
     st.dataframe(
         synthese.style.map(colorier_statut, subset=["Statut"]),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
