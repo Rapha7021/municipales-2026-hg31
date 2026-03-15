@@ -114,8 +114,9 @@ def scraper_commune(code_commune: str) -> dict | None:
         # Identifier le type de table par l'en-tête
         header_cells = [c.get_text(strip=True).lower() for c in rows[0].find_all(["td", "th"])]
 
-        # Table des sièges (contient "sièges à pourvoir" et "sièges pourvus")
-        if any("sièges" in h or "sieges" in h or "pourvoir" in h for h in header_cells):
+        # Table des sièges (header : '', 'Sièges à pourvoir', 'Sièges pourvus')
+        # On la distingue car elle contient "pourvoir" ET PAS "voix"
+        if any("pourvoir" in h for h in header_cells) and not any("voix" in h for h in header_cells):
             for row in rows[1:]:
                 cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
                 if len(cells) >= 3:
