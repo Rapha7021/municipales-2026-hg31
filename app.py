@@ -284,10 +284,10 @@ def main():
     if "sigs_http" not in st.session_state:
         st.session_state.sigs_http = None
 
-    # ── Vérification automatique des MAJ (toutes les 60s) ─────────
+    # ── Vérification automatique des MAJ + affichage statut (toutes les 60s)
     @st.fragment(run_every="60s")
-    def polling_mises_a_jour():
-        """Requête HEAD légère toutes les 60s pour détecter un changement."""
+    def polling_et_statut():
+        """Tourne toutes les 60s : HEAD check + mise à jour du bandeau de statut."""
         sigs = recuperer_signatures_http()
         anciennes = st.session_state.sigs_http
         st.session_state.sigs_http = sigs
@@ -295,7 +295,22 @@ def main():
             st.cache_data.clear()
             st.rerun(scope="app")
 
-    polling_mises_a_jour()
+        # Bandeau visible qui prouve que le polling tourne
+        heure = datetime.now(tz=TZ_PARIS).strftime("%H:%M:%S")
+        heure_maj_str = (
+            st.session_state.heure_maj.strftime("%d/%m/%Y à %H:%M:%S")
+            if st.session_state.heure_maj
+            else "—"
+        )
+        if st.session_state.donnees_nouvelles:
+            st.success(
+                f"🆕 **Mise à jour détectée le {heure_maj_str} !** "
+                f"Les données ci-dessous sont à jour. Téléchargez le nouvel Excel."
+            )
+        else:
+            st.info(f"Dernière vérification : {heure} · Dernière MAJ des données : {heure_maj_str}")
+
+    polling_et_statut()
 
     # ── Bouton de rafraîchissement manuel ──────────────────────────
     if st.button("🔄 Rafraîchir manuellement"):
@@ -318,22 +333,6 @@ def main():
             st.session_state.donnees_nouvelles = True
         st.session_state.hash_donnees = hash_actuel
         st.session_state.heure_maj = datetime.now(tz=TZ_PARIS)
-
-    # ── Bandeau de statut ──────────────────────────────────────────
-    heure = datetime.now(tz=TZ_PARIS).strftime("%H:%M:%S")
-    heure_maj_str = (
-        st.session_state.heure_maj.strftime("%d/%m/%Y à %H:%M:%S")
-        if st.session_state.heure_maj
-        else "—"
-    )
-
-    if st.session_state.donnees_nouvelles:
-        st.success(
-            f"🆕 **Mise à jour détectée le {heure_maj_str} !** "
-            f"Les données ci-dessous sont à jour. Téléchargez le nouvel Excel."
-        )
-    else:
-        st.info(f"Dernière vérification : {heure} · Dernière MAJ des données : {heure_maj_str}")
 
     if gen.empty:
         st.warning(
