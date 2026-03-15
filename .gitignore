@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+.cache/
+resultats/
+*.parquet
+*.tmp
+.env
