@@ -485,43 +485,42 @@ def main():
     if "source_active" not in st.session_state:
         st.session_state.source_active = None
 
-    # ── Polling automatique toutes les 2 min ───────────────────────
+    # ── Rafraîchissement automatique toutes les 2 min ────────────────
+    if "dernier_refresh" not in st.session_state:
+        st.session_state.dernier_refresh = datetime.now(tz=TZ_PARIS)
+
     @st.fragment(run_every="120s")
-    def polling_et_statut():
-        """Toutes les 120s : re-scrape, compare le hash, rerun si changement."""
-        # Scrape léger pour comparer
-        try:
-            df_fresh = _charger_depuis_interieur_impl()  # bypass cache
-        except Exception:
-            df_fresh = None
+    def auto_refresh():
+        """Toutes les 120s : vide le cache et relance l'app complète."""
+        maintenant = datetime.now(tz=TZ_PARIS)
+        # Ne rerun que si au moins 60s se sont écoulées depuis le dernier refresh
+        # (évite le rerun au tout premier rendu du fragment)
+        ecart = (maintenant - st.session_state.dernier_refresh).total_seconds()
+        if ecart >= 60:
+            st.session_state.dernier_refresh = maintenant
+            st.cache_data.clear()
+            st.rerun(scope="app")
 
-        if df_fresh is not None and not df_fresh.empty:
-            h = calculer_hash_donnees(df_fresh)
-            if h != st.session_state.hash_donnees:
-                # Nouvelles données détectées → vider le cache et relancer l'app
-                st.cache_data.clear()
-                st.rerun(scope="app")
+    auto_refresh()
 
-        # Bandeau de statut
-        heure = datetime.now(tz=TZ_PARIS).strftime("%H:%M:%S")
-        heure_maj_str = (
-            st.session_state.heure_maj.strftime("%d/%m/%Y à %H:%M:%S")
-            if st.session_state.heure_maj
-            else "—"
+    # ── Bandeau de statut ──────────────────────────────────────────
+    heure = datetime.now(tz=TZ_PARIS).strftime("%H:%M:%S")
+    heure_maj_str = (
+        st.session_state.heure_maj.strftime("%d/%m/%Y à %H:%M:%S")
+        if st.session_state.heure_maj
+        else "—"
+    )
+    source = st.session_state.source_active or "—"
+    if st.session_state.donnees_nouvelles:
+        st.success(
+            f"🆕 **Mise à jour détectée le {heure_maj_str} !** "
+            f"Source : {source}"
         )
-        source = st.session_state.source_active or "—"
-        if st.session_state.donnees_nouvelles:
-            st.success(
-                f"🆕 **Mise à jour détectée le {heure_maj_str} !** "
-                f"Source : {source}"
-            )
-        else:
-            st.info(
-                f"🔄 Vérification auto : {heure} · "
-                f"Dernière MAJ : {heure_maj_str} · Source : {source}"
-            )
-
-    polling_et_statut()
+    else:
+        st.info(
+            f"🔄 Dernière vérification : {heure} · "
+            f"Dernière MAJ : {heure_maj_str} · Source : {source}"
+        )
 
     # ── Bouton de rafraîchissement manuel ──────────────────────────
     if st.button("🔄 Rafraîchir manuellement"):
