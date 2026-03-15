@@ -293,7 +293,7 @@ def main():
         st.session_state.sigs_http = sigs
         if anciennes is not None and sigs != anciennes:
             st.cache_data.clear()
-            st.rerun()
+            st.rerun(scope="app")
 
     polling_mises_a_jour()
 
