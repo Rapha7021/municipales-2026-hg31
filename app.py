@@ -97,29 +97,54 @@ def _nettoyer_nombre(texte: str) -> int | None:
 
 def scraper_commune(code_commune: str) -> dict | None:
     """Scrape les résultats d'une commune depuis le site du Ministère.
+    Essaie l'URL T2 d'abord, puis fallback sur l'URL T1 (qui peut
+    contenir les résultats T2 directement).
     Retourne None si résultats non parvenus ou erreur."""
-    url = f"{BASE_URL_INTERIEUR}/{code_commune}/"
-    resp = requests.get(url, timeout=30, headers={
-        "User-Agent": "DashboardMunicipales2026-HG31/1.0",
-    })
-    resp.raise_for_status()
-    resp.encoding = "utf-8"
-    soup = BeautifulSoup(resp.text, "html.parser")
+    # Essayer T2 puis T1
+    soup = None
+    for base_url in [BASE_URL_INTERIEUR, BASE_URL_INTERIEUR_T1]:
+        url = f"{base_url}/{code_commune}/"
+        try:
+            resp = requests.get(url, timeout=30, headers={
+                "User-Agent": "DashboardMunicipales2026-HG31/1.0",
+            })
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            resp.encoding = "utf-8"
+            soup = BeautifulSoup(resp.text, "html.parser")
+            break
+        except Exception:
+            continue
+
+    if soup is None:
+        return None
 
     # Détecter "résultats non parvenus"
     titre = soup.find("h5")
     if titre and "non parvenus" in titre.get_text().lower():
         return None
 
+    # Détecter si la page contient des résultats de 2d tour
+    page_text = soup.get_text()
+    a_resultats_t2 = bool(re.search(r'2[de]\s+tour', page_text, re.IGNORECASE))
+
     # Détecter si dépouillement encore en cours ("incomplets calculés sur la base de X%")
     m = re.search(
         r'incomplets?\s+calcul[ée]s?\s+sur\s+la\s+base\s+de\s+([\d,\.]+)\s*%',
-        soup.get_text(), re.IGNORECASE,
+        page_text, re.IGNORECASE,
     )
     pct_depouille = float(m.group(1).replace(",", ".")) if m else None
 
     tables = soup.find_all("table")
     resultat = {"candidats": [], "participation": {}, "sieges_pourvus": 0, "sieges_a_pourvoir": 0, "pct_depouille": pct_depouille}
+
+    # Si la page a des résultats T2 (page T1 mise à jour), il y a 2 blocs
+    # de candidats et 2 de participation. On ne veut que le 1er de chaque
+    # (= le T2). On utilise des compteurs pour s'arrêter.
+    nb_tables_candidats = 0
+    nb_tables_participation = 0
+    max_tables = 1 if a_resultats_t2 else 99
 
     for table in tables:
         rows = table.find_all("tr")
@@ -130,7 +155,6 @@ def scraper_commune(code_commune: str) -> dict | None:
         header_cells = [c.get_text(strip=True).lower() for c in rows[0].find_all(["td", "th"])]
 
         # Table des sièges (header : '', 'Sièges à pourvoir', 'Sièges pourvus')
-        # On la distingue car elle contient "pourvoir" ET PAS "voix"
         if any("pourvoir" in h for h in header_cells) and not any("voix" in h for h in header_cells):
             for row in rows[1:]:
                 cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
@@ -144,6 +168,9 @@ def scraper_commune(code_commune: str) -> dict | None:
 
         # Table de participation (contient "nombre", "% inscrits", etc.)
         elif any("nombre" in h for h in header_cells):
+            if nb_tables_participation >= max_tables:
+                continue
+            nb_tables_participation += 1
             for row in rows[1:]:
                 cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
                 if len(cells) >= 2:
@@ -155,6 +182,9 @@ def scraper_commune(code_commune: str) -> dict | None:
 
         # Table des candidatures (contient "voix", "conduite par", etc.)
         elif any("voix" in h for h in header_cells):
+            if nb_tables_candidats >= max_tables:
+                continue
+            nb_tables_candidats += 1
             # Détecter si la colonne "Nuance" est présente (décale les indices)
             has_nuance = any("nuance" in h for h in header_cells)
             idx_voix = 3 if has_nuance else 2
@@ -188,7 +218,12 @@ def charger_communes_t1_acquis() -> set:
                 "User-Agent": "DashboardMunicipales2026-HG31/1.0",
             })
             resp.raise_for_status()
+            resp.encoding = "utf-8"
             soup = BeautifulSoup(resp.text, "html.parser")
+            page_text = soup.get_text()
+            # Si la page mentionne des résultats de 2d tour, ce n'est PAS un T1 acquis
+            if re.search(r'2[de]\s+tour', page_text, re.IGNORECASE):
+                continue
             # Signal prioritaire : texte "pourvu au tour 1" dans le H5
             h5 = soup.find("h5")
             if h5 and re.search(r'pourvu\s+au\s+tour\s*1', h5.get_text(), re.IGNORECASE):
