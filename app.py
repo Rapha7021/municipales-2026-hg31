@@ -716,21 +716,19 @@ def main():
         st.session_state.heure_maj = datetime.now(tz=TZ_PARIS)
 
     # ── Métriques globales ─────────────────────────────────────────
-    nb_complets  = df_final[df_final["Statut"] == "Élu(e)"]["Commune"].nunique()
-    nb_t1_acquis = df_final[df_final["Statut"] == "Élu(e) au 1er tour"]["Commune"].nunique()
+    nb_elus      = df_final[df_final["Statut"].isin(["Élu(e)", "Élu(e) au 1er tour"])]["Commune"].nunique()
     nb_en_cours  = df_final[df_final["Statut"].str.startswith("en cours", na=False)]["Commune"].nunique()
     nb_en_attente = df_final[df_final["Statut"] == "en attente"]["Commune"].nunique()
     nb_attente   = df_final[
         df_final["Statut"].isin(["données non disponibles", "résultats non parvenus"])
     ]["Commune"].nunique()
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Communes suivies",  len(COMMUNES_CIBLES))
-    c2.metric("✅ Élu(e) T2",        nb_complets)
-    c3.metric("🔵 Élu(e) T1",        nb_t1_acquis)
-    c4.metric("🟠 En attente rés.",  nb_en_attente)
-    c5.metric("⏳ En cours",          nb_en_cours)
-    c6.metric("⚠️ Non parvenus",     nb_attente)
+    c2.metric("✅ Élu(e)",           nb_elus)
+    c3.metric("🟠 En attente rés.",  nb_en_attente)
+    c4.metric("⏳ En cours",          nb_en_cours)
+    c5.metric("⚠️ Non parvenus",     nb_attente)
 
     st.divider()
 
