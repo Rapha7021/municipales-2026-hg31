@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║  DASHBOARD WEB — MUNICIPALES 2026 — 1ER TOUR                   ║
+║  DASHBOARD WEB — MUNICIPALES 2026 — 2ÈME TOUR                  ║
 ║  Communes de Haute-Garonne (31)                                 ║
 ║  Cabinet de la Présidente de Région                             ║
 ╚══════════════════════════════════════════════════════════════════╝
@@ -33,18 +33,20 @@ from bs4 import BeautifulSoup
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────────
 
-ID_ELECTION = "2026_muni_t1"
+ID_ELECTION = "2026_muni_t2"
 CODE_DEPARTEMENT = "31"
 CODE_REGION = "76"   # Occitanie
 
 # Source 1 : site du Ministère de l'Intérieur (temps réel)
 BASE_URL_INTERIEUR = (
     "https://www.resultats-elections.interieur.gouv.fr"
-    "/municipales2026/ensemble_geographique"
+    "/municipales2026T2/ensemble_geographique"
     f"/{CODE_REGION}/{CODE_DEPARTEMENT}"
 )
 
 # Source 2 (fallback) : pipeline open data data.gouv.fr
+# Ces fichiers Parquet sont mis à jour en continu pour chaque tour ;
+# le filtre id_election == ID_ELECTION sélectionne automatiquement le bon tour.
 URL_GENERAL   = "https://www.data.gouv.fr/api/1/datasets/r/ff16d511-10c0-405e-9b35-511723948fce"
 URL_CANDIDATS = "https://www.data.gouv.fr/api/1/datasets/r/4d3b35f6-0b22-4415-a24c-419a676312e2"
 
@@ -201,11 +203,11 @@ def _charger_depuis_interieur_impl() -> pd.DataFrame | None:
         sa = res["sieges_a_pourvoir"]
         pct = res["pct_depouille"]
         if sa > 0 and sp == sa:
-            statut = "1er tour acquis"
+            statut = "Élu(e)"
         elif pct is not None:
             statut = f"en cours ({pct:.1f}% dépouillé)"
         else:
-            statut = "2ème tour"
+            statut = "en attente"
 
         if not res["candidats"]:
             lignes.append({
@@ -420,8 +422,8 @@ def generer_excel_bytes(df_final: pd.DataFrame) -> bytes:
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df_final.to_excel(writer, index=False, sheet_name="Résultats T1")
-        ws = writer.sheets["Résultats T1"]
+        df_final.to_excel(writer, index=False, sheet_name="Résultats T2")
+        ws = writer.sheets["Résultats T2"]
 
         # Colonnes à fusionner (celles liées à la commune, pas au candidat)
         cols_commune = ["Commune", "Code_INSEE", "Votants", "Taux abstention (%)", "Statut"]
@@ -500,7 +502,7 @@ def main():
         layout="wide",
     )
 
-    st.title("🗳️ Municipales 2026 — 1er tour — Haute-Garonne (31)")
+    st.title("🗳️ Municipales 2026 — 2ème tour — Haute-Garonne (31)")
     st.caption(
         "Source primaire : resultats-elections.interieur.gouv.fr · "
         "Fallback : data.gouv.fr · Rafraîchissement auto toutes les 2 min"
@@ -602,17 +604,17 @@ def main():
         st.session_state.heure_maj = datetime.now(tz=TZ_PARIS)
 
     # ── Métriques globales ─────────────────────────────────────────
-    nb_complets = df_final[df_final["Statut"] == "1er tour acquis"]["Commune"].nunique()
+    nb_complets = df_final[df_final["Statut"] == "Élu(e)"]["Commune"].nunique()
     nb_en_cours = df_final[df_final["Statut"].str.startswith("en cours", na=False)]["Commune"].nunique()
-    nb_2t = df_final[df_final["Statut"] == "2ème tour"]["Commune"].nunique()
+    nb_en_attente_statut = df_final[df_final["Statut"] == "en attente"]["Commune"].nunique()
     nb_attente = df_final[
         df_final["Statut"].isin(["données non disponibles", "résultats non parvenus"])
     ]["Commune"].nunique()
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Communes suivies",  len(COMMUNES_CIBLES))
-    c2.metric("✅ 1er tour acquis",  nb_complets)
-    c3.metric("🟠 2ème tour", nb_2t)
+    c2.metric("✅ Élu(e)",          nb_complets)
+    c3.metric("🟠 En attente T2",   nb_en_attente_statut)
     c4.metric("⏳ En cours",         nb_en_cours)
     c5.metric("⚠️ Non parvenus",     nb_attente)
 
@@ -626,7 +628,7 @@ def main():
         st.download_button(
             label="📥 Télécharger le nouvel Excel (données mises à jour !)",
             data=excel_bytes,
-            file_name=f"municipales_2026_T1_HG31_{horodatage}.xlsx",
+            file_name=f"municipales_2026_T2_HG31_{horodatage}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
             on_click=lambda: st.session_state.update(donnees_nouvelles=False),
@@ -635,7 +637,7 @@ def main():
         st.download_button(
             label="📥 Télécharger Excel",
             data=excel_bytes,
-            file_name=f"municipales_2026_T1_HG31_{horodatage}.xlsx",
+            file_name=f"municipales_2026_T2_HG31_{horodatage}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
@@ -650,9 +652,9 @@ def main():
     df_affiche = df_final if choix == "Toutes" else df_final[df_final["Commune"] == choix]
 
     def colorier_statut(val):
-        if val == "1er tour acquis":
+        if val == "Élu(e)":
             return "background-color: #d4edda; color: #155724;"
-        elif val == "2ème tour":
+        elif val == "en attente":
             return "background-color: #fde8d0; color: #7d3c00;"
         elif str(val).startswith("en cours"):
             return "background-color: #fff3cd; color: #856404;"

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║  OUTIL DE SUIVI — MUNICIPALES 2026 — 1ER TOUR                  ║
+║  OUTIL DE SUIVI — MUNICIPALES 2026 — 2ÈME TOUR                 ║
 ║  Communes de Haute-Garonne (31)                                 ║
 ║  Cabinet de la Présidente de Région                             ║
 ╚══════════════════════════════════════════════════════════════════╝
@@ -37,10 +37,12 @@ except ImportError:
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────────
 
-ID_ELECTION = "2026_muni_t1"
+ID_ELECTION = "2026_muni_t2"
 CODE_DEPARTEMENT = "31"
 
 # URLs des fichiers Parquet sur data.gouv.fr
+# Ces fichiers sont mis à jour en continu pour chaque tour ;
+# le filtre id_election == ID_ELECTION sélectionne automatiquement le bon tour.
 URL_GENERAL = "https://www.data.gouv.fr/api/1/datasets/r/ff16d511-10c0-405e-9b35-511723948fce"
 URL_CANDIDATS = "https://www.data.gouv.fr/api/1/datasets/r/4d3b35f6-0b22-4415-a24c-419a676312e2"
 
@@ -85,7 +87,7 @@ def print_banner():
     now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     print()
     print("═" * 66)
-    print("  MUNICIPALES 2026 — 1ER TOUR — HAUTE-GARONNE (31)")
+    print("  MUNICIPALES 2026 — 2ÈME TOUR — HAUTE-GARONNE (31)")
     print(f"  Extraction lancée le {now}")
     print("═" * 66)
     print()
@@ -362,10 +364,10 @@ def exporter(df_final):
     OUTPUT_DIR.mkdir(exist_ok=True)
     horodatage = datetime.now().strftime("%Y%m%d_%H%M")
 
-    xlsx_path = OUTPUT_DIR / f"municipales_2026_T1_HG31_{horodatage}.xlsx"
+    xlsx_path = OUTPUT_DIR / f"municipales_2026_T2_HG31_{horodatage}.xlsx"
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
-        df_final.to_excel(writer, index=False, sheet_name="Résultats T1")
-        ajuster_largeurs(writer.sheets["Résultats T1"], df_final)
+        df_final.to_excel(writer, index=False, sheet_name="Résultats T2")
+        ajuster_largeurs(writer.sheets["Résultats T2"], df_final)
 
         # Onglet résumé participation
         resume = df_final.drop_duplicates(subset=["Commune"])[
