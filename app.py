@@ -247,29 +247,21 @@ def _charger_depuis_interieur_impl() -> pd.DataFrame | None:
     for code, info in sorted(COMMUNES_CIBLES.items(), key=lambda x: x[1]["nom"]):
         nom = info["nom"]
 
-        # Si la commune a été élue dès le 1er tour, pas de 2ème tour à scraper
-        if code in communes_t1_acquis:
-            lignes.append({
-                "Commune": nom, "Code_INSEE": code,
-                "Votants": None, "Taux abstention (%)": None,
-                "Candidat": "", "Nuance": "", "Liste": "",
-                "Voix": None, "% exprimés": None,
-                "Statut": "Élu(e) au 1er tour",
-            })
-            continue
-
+        # Toujours tenter le T2 d'abord
         try:
             res = scraper_commune(code)
         except Exception:
             res = None
 
         if res is None:
+            # Pas de résultats T2 : vérifier si c'est parce que c'était acquis au T1
+            statut_nd = "Élu(e) au 1er tour" if code in communes_t1_acquis else "résultats non parvenus"
             lignes.append({
                 "Commune": nom, "Code_INSEE": code,
                 "Votants": None, "Taux abstention (%)": None,
                 "Candidat": "", "Nuance": "", "Liste": "",
                 "Voix": None, "% exprimés": None,
-                "Statut": "résultats non parvenus",
+                "Statut": statut_nd,
             })
             continue
 
