@@ -28,9 +28,10 @@ from pathlib import Path
 try:
     import pandas as pd
     import requests
+    from bs4 import BeautifulSoup
 except ImportError:
     print("❌ Dépendances manquantes. Lancer :")
-    print("   pip install pandas pyarrow requests openpyxl")
+    print("   pip install pandas pyarrow requests openpyxl beautifulsoup4")
     sys.exit(1)
 
 # ─────────────────────────────────────────────────────────────────
@@ -39,6 +40,13 @@ except ImportError:
 
 ID_ELECTION = "2026_muni_t2"
 CODE_DEPARTEMENT = "31"
+CODE_REGION = "76"  # Occitanie
+
+BASE_URL_INTERIEUR_T1 = (
+    "https://www.resultats-elections.interieur.gouv.fr"
+    "/municipales2026/ensemble_geographique"
+    f"/{CODE_REGION}/{CODE_DEPARTEMENT}"
+)
 
 # URLs des fichiers Parquet sur data.gouv.fr
 # Ces fichiers sont mis à jour en continu pour chaque tour ;
@@ -81,6 +89,55 @@ OUTPUT_DIR = Path(__file__).parent / "resultats"
 # ─────────────────────────────────────────────────────────────────
 # FONCTIONS
 # ─────────────────────────────────────────────────────────────────
+
+def _nettoyer_nombre(texte: str):
+    """Convertit '1 211', '1\xa0211' en 1211."""
+    if not texte:
+        return None
+    s = texte.replace("\xa0", "").replace("\u202f", "").replace(" ", "").replace(",", "").strip()
+    try:
+        return int(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def detecter_communes_t1_acquis() -> set:
+    """Interroge les pages T1 du Ministère pour savoir quelles communes
+    ont été élues au 1er tour et n'ont pas de 2ème tour."""
+    print("🔍 Détection des communes élues au 1er tour...")
+    acquis = set()
+    for code, info in COMMUNES_CIBLES.items():
+        url = f"{BASE_URL_INTERIEUR_T1}/{code}/"
+        try:
+            resp = requests.get(url, timeout=15, headers={
+                "User-Agent": "DashboardMunicipales2026-HG31/1.0",
+            })
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+            sp, sa = 0, 0
+            for table in soup.find_all("table"):
+                rows = table.find_all("tr")
+                if not rows:
+                    continue
+                hdrs = [c.get_text(strip=True).lower() for c in rows[0].find_all(["td", "th"])]
+                if any("pourvoir" in h for h in hdrs) and not any("voix" in h for h in hdrs):
+                    for row in rows[1:]:
+                        cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
+                        if len(cells) >= 3:
+                            a = _nettoyer_nombre(cells[1])
+                            p = _nettoyer_nombre(cells[2])
+                            if a:
+                                sa += a
+                            if p:
+                                sp += p
+            if sa > 0 and sp == sa:
+                acquis.add(code)
+                print(f"   ✅ {info['nom']} → Élu(e) au 1er tour")
+        except Exception:
+            pass
+    print(f"   → {len(acquis)} commune(s) sans 2ème tour")
+    return acquis
+
 
 def print_banner():
     """Affiche le bandeau de bienvenue."""
@@ -229,8 +286,10 @@ def determiner_statut(code_commune, nb_bv_trouves):
         return f"partiel ({nb_bv_trouves}/{bv_ref} BV)"
 
 
-def construire_tableau_final(participation, resultats_cand):
+def construire_tableau_final(participation, resultats_cand, communes_t1_acquis=None):
     """Construit le tableau CSV final avec toutes les colonnes demandées."""
+    if communes_t1_acquis is None:
+        communes_t1_acquis = set()
     lignes = []
 
     for code, info in sorted(COMMUNES_CIBLES.items(), key=lambda x: x[1]["nom"]):
@@ -240,7 +299,7 @@ def construire_tableau_final(participation, resultats_cand):
         part = participation[participation["code_commune"] == code]
 
         if part.empty:
-            # Commune sans données
+            statut_nd = "Élu(e) au 1er tour" if code in communes_t1_acquis else "données non disponibles"
             lignes.append({
                 "Commune": nom_commune,
                 "Code_INSEE": code,
@@ -251,7 +310,7 @@ def construire_tableau_final(participation, resultats_cand):
                 "Liste": "",
                 "Nombre de voix": "",
                 "% voix sur exprimés": "",
-                "Statut": "données non disponibles",
+                "Statut": statut_nd,
             })
             continue
 
@@ -443,7 +502,8 @@ def main():
         print(f"   ⚠️  En attente : {', '.join(sorted(noms))}")
 
     # 4. Construire le tableau final
-    df_final = construire_tableau_final(participation, resultats_cand)
+    communes_t1_acquis = detecter_communes_t1_acquis()
+    df_final = construire_tableau_final(participation, resultats_cand, communes_t1_acquis)
 
     # 5. Afficher le résumé
     afficher_resume(df_final)

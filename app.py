@@ -44,6 +44,12 @@ BASE_URL_INTERIEUR = (
     f"/{CODE_REGION}/{CODE_DEPARTEMENT}"
 )
 
+BASE_URL_INTERIEUR_T1 = (
+    "https://www.resultats-elections.interieur.gouv.fr"
+    "/municipales2026/ensemble_geographique"
+    f"/{CODE_REGION}/{CODE_DEPARTEMENT}"
+)
+
 # Source 2 (fallback) : pipeline open data data.gouv.fr
 # Ces fichiers Parquet sont mis à jour en continu pour chaque tour ;
 # le filtre id_election == ID_ELECTION sélectionne automatiquement le bon tour.
@@ -170,9 +176,46 @@ def scraper_commune(code_commune: str) -> dict | None:
     return resultat if resultat["participation"] else None
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def charger_communes_t1_acquis() -> set:
+    """Scrape les pages T1 (cache 1h) pour détecter les communes
+    élues dès le 1er tour et qui n'ont donc pas de 2ème tour."""
+    acquis = set()
+    for code in COMMUNES_CIBLES:
+        url = f"{BASE_URL_INTERIEUR_T1}/{code}/"
+        try:
+            resp = requests.get(url, timeout=15, headers={
+                "User-Agent": "DashboardMunicipales2026-HG31/1.0",
+            })
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+            sp, sa = 0, 0
+            for table in soup.find_all("table"):
+                rows = table.find_all("tr")
+                if not rows:
+                    continue
+                hdrs = [c.get_text(strip=True).lower() for c in rows[0].find_all(["td", "th"])]
+                if any("pourvoir" in h for h in hdrs) and not any("voix" in h for h in hdrs):
+                    for row in rows[1:]:
+                        cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
+                        if len(cells) >= 3:
+                            a = _nettoyer_nombre(cells[1])
+                            p = _nettoyer_nombre(cells[2])
+                            if a:
+                                sa += a
+                            if p:
+                                sp += p
+            if sa > 0 and sp == sa:
+                acquis.add(code)
+        except Exception:
+            pass
+    return acquis
+
+
 def _charger_depuis_interieur_impl() -> pd.DataFrame | None:
     """Scrape toutes les communes cibles depuis le site du Ministère.
     Retourne un DataFrame prêt à l'emploi, ou None si aucun résultat."""
+    communes_t1_acquis = charger_communes_t1_acquis()
     lignes = []
     for code, info in sorted(COMMUNES_CIBLES.items(), key=lambda x: x[1]["nom"]):
         nom = info["nom"]
@@ -182,12 +225,13 @@ def _charger_depuis_interieur_impl() -> pd.DataFrame | None:
             res = None
 
         if res is None:
+            statut_nd = "Élu(e) au 1er tour" if code in communes_t1_acquis else "résultats non parvenus"
             lignes.append({
                 "Commune": nom, "Code_INSEE": code,
                 "Votants": None, "Taux abstention (%)": None,
                 "Candidat": "", "Nuance": "", "Liste": "",
                 "Voix": None, "% exprimés": None,
-                "Statut": "résultats non parvenus",
+                "Statut": statut_nd,
             })
             continue
 
@@ -355,19 +399,22 @@ def determiner_statut(code_commune, nb_bv_trouves):
         return f"partiel ({nb_bv_trouves}/{bv_ref} BV)"
 
 
-def construire_tableau_final(participation, resultats_cand):
+def construire_tableau_final(participation, resultats_cand, communes_t1_acquis=None):
+    if communes_t1_acquis is None:
+        communes_t1_acquis = set()
     lignes = []
     for code, info in sorted(COMMUNES_CIBLES.items(), key=lambda x: x[1]["nom"]):
         nom_commune = info["nom"]
         part = participation[participation["code_commune"] == code]
 
         if part.empty:
+            statut_nd = "Élu(e) au 1er tour" if code in communes_t1_acquis else "données non disponibles"
             lignes.append({
                 "Commune": nom_commune, "Code_INSEE": code,
                 "Votants": None, "Taux abstention (%)": None,
                 "Candidat": "", "Nuance": "", "Liste": "",
                 "Voix": None, "% exprimés": None,
-                "Statut": "données non disponibles",
+                "Statut": statut_nd,
             })
             continue
 
@@ -580,7 +627,7 @@ def main():
                 gen, cand = charger_et_filtrer()
             if not gen.empty:
                 participation, resultats_cand = agreger_resultats(gen, cand)
-                df_final = construire_tableau_final(participation, resultats_cand)
+                df_final = construire_tableau_final(participation, resultats_cand, charger_communes_t1_acquis())
                 source = "data.gouv.fr (Parquet)"
         except Exception as e:
             st.error(f"❌ Impossible de charger les données : {e}")
@@ -604,19 +651,21 @@ def main():
         st.session_state.heure_maj = datetime.now(tz=TZ_PARIS)
 
     # ── Métriques globales ─────────────────────────────────────────
-    nb_complets = df_final[df_final["Statut"] == "Élu(e)"]["Commune"].nunique()
-    nb_en_cours = df_final[df_final["Statut"].str.startswith("en cours", na=False)]["Commune"].nunique()
-    nb_en_attente_statut = df_final[df_final["Statut"] == "en attente"]["Commune"].nunique()
-    nb_attente = df_final[
+    nb_complets  = df_final[df_final["Statut"] == "Élu(e)"]["Commune"].nunique()
+    nb_t1_acquis = df_final[df_final["Statut"] == "Élu(e) au 1er tour"]["Commune"].nunique()
+    nb_en_cours  = df_final[df_final["Statut"].str.startswith("en cours", na=False)]["Commune"].nunique()
+    nb_en_attente = df_final[df_final["Statut"] == "en attente"]["Commune"].nunique()
+    nb_attente   = df_final[
         df_final["Statut"].isin(["données non disponibles", "résultats non parvenus"])
     ]["Commune"].nunique()
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Communes suivies",  len(COMMUNES_CIBLES))
-    c2.metric("✅ Élu(e)",          nb_complets)
-    c3.metric("🟠 En attente T2",   nb_en_attente_statut)
-    c4.metric("⏳ En cours",         nb_en_cours)
-    c5.metric("⚠️ Non parvenus",     nb_attente)
+    c2.metric("✅ Élu(e) T2",        nb_complets)
+    c3.metric("🔵 Élu(e) T1",        nb_t1_acquis)
+    c4.metric("🟠 En attente rés.",  nb_en_attente)
+    c5.metric("⏳ En cours",          nb_en_cours)
+    c6.metric("⚠️ Non parvenus",     nb_attente)
 
     st.divider()
 
@@ -654,6 +703,8 @@ def main():
     def colorier_statut(val):
         if val == "Élu(e)":
             return "background-color: #d4edda; color: #155724;"
+        elif val == "Élu(e) au 1er tour":
+            return "background-color: #cce5ff; color: #004085;"
         elif val == "en attente":
             return "background-color: #fde8d0; color: #7d3c00;"
         elif str(val).startswith("en cours"):
