@@ -115,6 +115,12 @@ def detecter_communes_t1_acquis() -> set:
             })
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "html.parser")
+            # Signal prioritaire : texte "pourvu au tour 1" dans le H5
+            h5 = soup.find("h5")
+            if h5 and re.search(r'pourvu\s+au\s+tour\s*1', h5.get_text(), re.IGNORECASE):
+                acquis.add(code)
+                print(f"   ✅ {info['nom']} → Élu(e) au 1er tour")
+                continue
             sp, sa = 0, 0
             for table in soup.find_all("table"):
                 rows = table.find_all("tr")
@@ -150,7 +156,7 @@ def detecter_communes_t1_acquis() -> set:
                 if m_ap and m_pu:
                     sa = int(m_ap.group(1))
                     sp = int(m_pu.group(1))
-            if sa > 0 and sp == sa:
+            if sa > 0 and sp >= sa:
                 acquis.add(code)
                 print(f"   ✅ {info['nom']} → Élu(e) au 1er tour")
         except Exception:
