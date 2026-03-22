@@ -20,6 +20,7 @@ Usage :
 
 import os
 import sys
+import re
 import time
 import tempfile
 from datetime import datetime
@@ -121,15 +122,34 @@ def detecter_communes_t1_acquis() -> set:
                     continue
                 hdrs = [c.get_text(strip=True).lower() for c in rows[0].find_all(["td", "th"])]
                 if any("pourvoir" in h for h in hdrs) and not any("voix" in h for h in hdrs):
+                    # Détecter les indices de colonnes depuis l'en-tête
+                    idx_ap = next((i for i, h in enumerate(hdrs) if "pourvoir" in h), None)
+                    idx_pu = next(
+                        (i for i, h in enumerate(hdrs) if "pourvus" in h and "pourvoir" not in h),
+                        None,
+                    )
                     for row in rows[1:]:
                         cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
-                        if len(cells) >= 3:
+                        if idx_ap is not None and idx_pu is not None and len(cells) > max(idx_ap, idx_pu):
+                            a = _nettoyer_nombre(cells[idx_ap])
+                            p = _nettoyer_nombre(cells[idx_pu])
+                        elif len(cells) >= 3:
                             a = _nettoyer_nombre(cells[1])
                             p = _nettoyer_nombre(cells[2])
-                            if a:
-                                sa += a
-                            if p:
-                                sp += p
+                        else:
+                            continue
+                        if a:
+                            sa += a
+                        if p:
+                            sp += p
+            # Fallback textuel si l'analyse du tableau n'a rien trouvé
+            if sa == 0:
+                page_text = soup.get_text()
+                m_ap = re.search(r'(\d+)\s*sièges?\s*à\s*pourvoir', page_text, re.IGNORECASE)
+                m_pu = re.search(r'(\d+)\s*sièges?\s*pourvus?', page_text, re.IGNORECASE)
+                if m_ap and m_pu:
+                    sa = int(m_ap.group(1))
+                    sp = int(m_pu.group(1))
             if sa > 0 and sp == sa:
                 acquis.add(code)
                 print(f"   ✅ {info['nom']} → Élu(e) au 1er tour")

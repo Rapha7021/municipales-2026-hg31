@@ -196,15 +196,37 @@ def charger_communes_t1_acquis() -> set:
                     continue
                 hdrs = [c.get_text(strip=True).lower() for c in rows[0].find_all(["td", "th"])]
                 if any("pourvoir" in h for h in hdrs) and not any("voix" in h for h in hdrs):
+                    # Détecter les indices de colonnes depuis l'en-tête pour s'adapter
+                    # à plusieurs structures possibles (2 ou 3 colonnes)
+                    idx_ap = next((i for i, h in enumerate(hdrs) if "pourvoir" in h), None)
+                    idx_pu = next(
+                        (i for i, h in enumerate(hdrs) if "pourvus" in h and "pourvoir" not in h),
+                        None,
+                    )
                     for row in rows[1:]:
                         cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
-                        if len(cells) >= 3:
+                        if idx_ap is not None and idx_pu is not None and len(cells) > max(idx_ap, idx_pu):
+                            # Structure avec labels en en-tête : (valeur_ap, valeur_pu)
+                            a = _nettoyer_nombre(cells[idx_ap])
+                            p = _nettoyer_nombre(cells[idx_pu])
+                        elif len(cells) >= 3:
+                            # Structure avec colonne label en col 0 : (label, ap, pu)
                             a = _nettoyer_nombre(cells[1])
                             p = _nettoyer_nombre(cells[2])
-                            if a:
-                                sa += a
-                            if p:
-                                sp += p
+                        else:
+                            continue
+                        if a:
+                            sa += a
+                        if p:
+                            sp += p
+            # Fallback textuel si l'analyse du tableau n'a rien trouvé
+            if sa == 0:
+                page_text = soup.get_text()
+                m_ap = re.search(r'(\d+)\s*sièges?\s*à\s*pourvoir', page_text, re.IGNORECASE)
+                m_pu = re.search(r'(\d+)\s*sièges?\s*pourvus?', page_text, re.IGNORECASE)
+                if m_ap and m_pu:
+                    sa = int(m_ap.group(1))
+                    sp = int(m_pu.group(1))
             if sa > 0 and sp == sa:
                 acquis.add(code)
         except Exception:
@@ -219,19 +241,30 @@ def _charger_depuis_interieur_impl() -> pd.DataFrame | None:
     lignes = []
     for code, info in sorted(COMMUNES_CIBLES.items(), key=lambda x: x[1]["nom"]):
         nom = info["nom"]
+
+        # Si la commune a été élue dès le 1er tour, pas de 2ème tour à scraper
+        if code in communes_t1_acquis:
+            lignes.append({
+                "Commune": nom, "Code_INSEE": code,
+                "Votants": None, "Taux abstention (%)": None,
+                "Candidat": "", "Nuance": "", "Liste": "",
+                "Voix": None, "% exprimés": None,
+                "Statut": "Élu(e) au 1er tour",
+            })
+            continue
+
         try:
             res = scraper_commune(code)
         except Exception:
             res = None
 
         if res is None:
-            statut_nd = "Élu(e) au 1er tour" if code in communes_t1_acquis else "résultats non parvenus"
             lignes.append({
                 "Commune": nom, "Code_INSEE": code,
                 "Votants": None, "Taux abstention (%)": None,
                 "Candidat": "", "Nuance": "", "Liste": "",
                 "Voix": None, "% exprimés": None,
-                "Statut": statut_nd,
+                "Statut": "résultats non parvenus",
             })
             continue
 
